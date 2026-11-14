@@ -1,0 +1,47 @@
+name: Market-Hours v3.1 Valuation Snapshot Logger
+
+on:
+  schedule:
+    # Every 30 minutes Monday-Friday across US Eastern market hours (handles EST & EDT)
+    - cron: "0,30 13-21 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Snapshot target (intraday, daily, or both)"
+        required: false
+        default: "intraday"
+
+jobs:
+  log-snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Vercel /api/snapshot during Nasdaq regular session
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          MANUAL_MODE: ${{ github.event.inputs.mode }}
+        run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "APP_URL or CRON_SECRET secret not configured yet — skipping snapshot."
+            exit 0
+          fi
+          BASE_URL="${APP_URL%/}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            MODE="${MANUAL_MODE:-intraday}"
+          else
+            NY_HM=$(TZ="America/New_York" date +%H%M)
+            echo "Current New York time (HHMM): $NY_HM"
+            if [ "$NY_HM" -lt 0930 ] || [ "$NY_HM" -gt 1625 ]; then
+              echo "Outside US regular market hours (09:30-16:25 ET) — skipping."
+              exit 0
+            fi
+            if [ "$NY_HM" -ge 1600 ]; then
+              MODE="both"
+            else
+              MODE="intraday"
+            fi
+          fi
+          echo "Logging v3.1 snapshot (mode=$MODE) to $BASE_URL/api/snapshot..."
+          curl --fail --silent --show-error -X POST \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$BASE_URL/api/snapshot?mode=$MODE"
