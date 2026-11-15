@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { unstable_cache } from "next/cache";
 import {
   DEFAULT_MODEL_CONFIG,
   INITIAL_ASST_BS,
@@ -36,7 +37,46 @@ export interface SnapshotLedgerRow {
   tranche_prices_json: string;
 }
 
+type SheetConstantsResult = {
+  source: "google_sheets" | "baseline_fallback";
+  config: ModelConfig;
+  asst: TreasuryBalanceSheet;
+  mstr: TreasuryBalanceSheet;
+  filingHistory: Record<
+    string,
+    Array<{
+      effectiveDate: string;
+      btcHoldings: number;
+      basicShares: number;
+      filingStamp: string;
+    }>
+  >;
+  syncedAt: string;
+};
+
+type SheetHistoryResult = {
+  source: "google_sheets" | "seed_only";
+  intraday: SnapshotLedgerRow[];
+  daily: SnapshotLedgerRow[];
+};
+
 let cachedAccessToken: { token: string; expiresAtMs: number } | null = null;
+let lastGoodConstants: SheetConstantsResult | null = null;
+let lastGoodHistory: SheetHistoryResult | null = null;
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number = 6000
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function base64UrlEncode(input: Buffer | string): string {
   const buf = typeof input === "string" ? Buffer.from(input, "utf8") : input;
@@ -111,12 +151,16 @@ async function getGoogleAccessToken(): Promise<string> {
     assertion,
   });
 
-  const res = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
-    cache: "no-store",
-  });
+  const res = await fetchWithTimeout(
+    "https://oauth2.googleapis.com/token",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+      cache: "no-store",
+    },
+    5000
+  );
 
   if (!res.ok) {
     const errTxt = await res.text();
@@ -164,28 +208,41 @@ function toBool(val: string | undefined, fallback: boolean = false): boolean {
   return fallback;
 }
 
-export async function fetchSheetConstants(): Promise<{
-  source: "google_sheets" | "baseline_fallback";
-  config: ModelConfig;
-  asst: TreasuryBalanceSheet;
-  mstr: TreasuryBalanceSheet;
-  filingHistory: Record<string, Array<{ effectiveDate: string; btcHoldings: number; basicShares: number; filingStamp: string }>>;
-  syncedAt: string;
-}> {
-  if (!isGoogleSheetsConfigured()) {
-    return {
-      source: "baseline_fallback",
-      config: DEFAULT_MODEL_CONFIG,
-      asst: { ...INITIAL_ASST_BS, debtPutYears: resolveDebtPutYears(INITIAL_ASST_BS) },
-      mstr: { ...INITIAL_MSTR_BS, debtPutYears: resolveDebtPutYears(INITIAL_MSTR_BS) },
-      filingHistory: {
-        ASST: [{ effectiveDate: INITIAL_ASST_BS.effectiveDate, btcHoldings: INITIAL_ASST_BS.btcHoldings, basicShares: INITIAL_ASST_BS.basicShares, filingStamp: INITIAL_ASST_BS.filingStamp }],
-        MSTR: [{ effectiveDate: INITIAL_MSTR_BS.effectiveDate, btcHoldings: INITIAL_MSTR_BS.btcHoldings, basicShares: INITIAL_MSTR_BS.basicShares, filingStamp: INITIAL_MSTR_BS.filingStamp }],
-      },
-      syncedAt: new Date().toISOString(),
-    };
-  }
+function buildBaselineConstants(): SheetConstantsResult {
+  return {
+    source: "baseline_fallback",
+    config: DEFAULT_MODEL_CONFIG,
+    asst: {
+      ...INITIAL_ASST_BS,
+      debtPutYears: resolveDebtPutYears(INITIAL_ASST_BS),
+    },
+    mstr: {
+      ...INITIAL_MSTR_BS,
+      debtPutYears: resolveDebtPutYears(INITIAL_MSTR_BS),
+    },
+    filingHistory: {
+      ASST: [
+        {
+          effectiveDate: INITIAL_ASST_BS.effectiveDate,
+          btcHoldings: INITIAL_ASST_BS.btcHoldings,
+          basicShares: INITIAL_ASST_BS.basicShares,
+          filingStamp: INITIAL_ASST_BS.filingStamp,
+        },
+      ],
+      MSTR: [
+        {
+          effectiveDate: INITIAL_MSTR_BS.effectiveDate,
+          btcHoldings: INITIAL_MSTR_BS.btcHoldings,
+          basicShares: INITIAL_MSTR_BS.basicShares,
+          filingStamp: INITIAL_MSTR_BS.filingStamp,
+        },
+      ],
+    },
+    syncedAt: new Date().toISOString(),
+  };
+}
 
+async function loadSheetConstantsUncached(): Promise<SheetConstantsResult> {
   const sheetId = process.env.GOOGLE_SHEET_ID as string;
   const token = await getGoogleAccessToken();
   const url =
@@ -193,10 +250,14 @@ export async function fetchSheetConstants(): Promise<{
     encodeURIComponent(sheetId) +
     "/values:batchGet?ranges=Model_Config!A1:E50&ranges=Balance_Sheets!A1:R500&ranges=Preferred_Tranches!A1:K500";
 
-  const res = await fetch(url, {
-    headers: { Authorization: "Bearer " + token },
-    next: { revalidate: 300 },
-  });
+  const res = await fetchWithTimeout(
+    url,
+    {
+      headers: { Authorization: "Bearer " + token },
+      cache: "no-store",
+    },
+    6000
+  );
 
   if (!res.ok) {
     throw new Error("Sheets batchGet failed with status " + res.status);
@@ -217,10 +278,22 @@ export async function fetchSheetConstants(): Promise<{
 
   const config: ModelConfig = {
     riskFreeRate: toNum(cfgMap.risk_free_rate, DEFAULT_MODEL_CONFIG.riskFreeRate),
-    cycleHorizonYears: toNum(cfgMap.cycle_horizon_years, DEFAULT_MODEL_CONFIG.cycleHorizonYears),
-    sigmaCycleAnchor: toNum(cfgMap.sigma_cycle_anchor, DEFAULT_MODEL_CONFIG.sigmaCycleAnchor),
-    sigmaLiveHvDefault: toNum(cfgMap.sigma_live_hv_default, DEFAULT_MODEL_CONFIG.sigmaLiveHvDefault),
-    solvencyCeilingRatio: toNum(cfgMap.solvency_ceiling_ratio, DEFAULT_MODEL_CONFIG.solvencyCeilingRatio),
+    cycleHorizonYears: toNum(
+      cfgMap.cycle_horizon_years,
+      DEFAULT_MODEL_CONFIG.cycleHorizonYears
+    ),
+    sigmaCycleAnchor: toNum(
+      cfgMap.sigma_cycle_anchor,
+      DEFAULT_MODEL_CONFIG.sigmaCycleAnchor
+    ),
+    sigmaLiveHvDefault: toNum(
+      cfgMap.sigma_live_hv_default,
+      DEFAULT_MODEL_CONFIG.sigmaLiveHvDefault
+    ),
+    solvencyCeilingRatio: toNum(
+      cfgMap.solvency_ceiling_ratio,
+      DEFAULT_MODEL_CONFIG.solvencyCeilingRatio
+    ),
     engineVersion: cfgMap.engine_version || DEFAULT_MODEL_CONFIG.engineVersion,
   };
 
@@ -234,7 +307,9 @@ export async function fetchSheetConstants(): Promise<{
           (r.ticker || "").toUpperCase() === ticker &&
           toBool(r.is_active, true)
       )
-      .sort((a, b) => (a.effective_date || "").localeCompare(b.effective_date || ""));
+      .sort((a, b) =>
+        (a.effective_date || "").localeCompare(b.effective_date || "")
+      );
 
     const latestBs = matchingBs[matchingBs.length - 1];
     if (!latestBs) {
@@ -248,7 +323,9 @@ export async function fetchSheetConstants(): Promise<{
           (r.ticker || "").toUpperCase() === ticker &&
           toBool(r.is_active, true)
       )
-      .sort((a, b) => (a.effective_date || "").localeCompare(b.effective_date || ""));
+      .sort((a, b) =>
+        (a.effective_date || "").localeCompare(b.effective_date || "")
+      );
 
     for (const pr of matchingPrefs) {
       if (pr.tranche_id) activePrefsById.set(pr.tranche_id, pr);
@@ -268,9 +345,15 @@ export async function fetchSheetConstants(): Promise<{
                 label: existing?.label || pr.filing_notes || pr.tranche_id,
                 tier: Math.round(toNum(pr.tier, existing?.tier || 1)),
                 parTotal: toNum(pr.par_total_m, existing?.parTotal || 0),
-                couponRate: toNum(pr.coupon_rate, existing?.couponRate || 0.1),
+                couponRate: toNum(
+                  pr.coupon_rate,
+                  existing?.couponRate || 0.1
+                ),
                 rho: toNum(pr.rho, existing?.rho || 0.09),
-                lambdaBase: toNum(pr.lambda_base, existing?.lambdaBase || 0.7),
+                lambdaBase: toNum(
+                  pr.lambda_base,
+                  existing?.lambdaBase || 0.7
+                ),
                 variableParCap: toBool(
                   pr.variable_par_cap,
                   existing?.variableParCap || false
@@ -292,17 +375,32 @@ export async function fetchSheetConstants(): Promise<{
       basicShares: toNum(latestBs.basic_shares_m, fallbackBs.basicShares),
       equityIv30d: toNum(latestBs.equity_iv_30d, fallbackBs.equityIv30d),
       debtPutFace: toNum(latestBs.debt_put_face_m, fallbackBs.debtPutFace),
-      debtPutCoupon: toNum(latestBs.debt_put_coupon_m, fallbackBs.debtPutCoupon),
+      debtPutCoupon: toNum(
+        latestBs.debt_put_coupon_m,
+        fallbackBs.debtPutCoupon
+      ),
       debtPutMaturityDate:
         latestBs.debt_put_maturity_date !== undefined
           ? latestBs.debt_put_maturity_date
           : fallbackBs.debtPutMaturityDate,
       debtPutYears: fallbackBs.debtPutYears,
       debtLongFace: toNum(latestBs.debt_long_face_m, fallbackBs.debtLongFace),
-      debtLongCoupon: toNum(latestBs.debt_long_coupon_m, fallbackBs.debtLongCoupon),
-      convNoteShares: toNum(latestBs.conv_note_shares_m, fallbackBs.convNoteShares),
-      convNoteStrike: toNum(latestBs.conv_note_strike, fallbackBs.convNoteStrike),
-      strkParInTiers: toNum(latestBs.strk_par_in_tiers_m, fallbackBs.strkParInTiers),
+      debtLongCoupon: toNum(
+        latestBs.debt_long_coupon_m,
+        fallbackBs.debtLongCoupon
+      ),
+      convNoteShares: toNum(
+        latestBs.conv_note_shares_m,
+        fallbackBs.convNoteShares
+      ),
+      convNoteStrike: toNum(
+        latestBs.conv_note_strike,
+        fallbackBs.convNoteStrike
+      ),
+      strkParInTiers: toNum(
+        latestBs.strk_par_in_tiers_m,
+        fallbackBs.strkParInTiers
+      ),
       preferreds,
     };
     assembled.debtPutYears = resolveDebtPutYears(assembled);
@@ -311,8 +409,14 @@ export async function fetchSheetConstants(): Promise<{
 
   const buildHistoryList = (ticker: string) =>
     bsRows
-      .filter((r) => (r.ticker || "").toUpperCase() === ticker && toBool(r.is_active, true))
-      .sort((a, b) => (a.effective_date || "").localeCompare(b.effective_date || ""))
+      .filter(
+        (r) =>
+          (r.ticker || "").toUpperCase() === ticker &&
+          toBool(r.is_active, true)
+      )
+      .sort((a, b) =>
+        (a.effective_date || "").localeCompare(b.effective_date || "")
+      )
       .map((r) => ({
         effectiveDate: r.effective_date || "",
         btcHoldings: toNum(r.btc_holdings, 0),
@@ -333,7 +437,29 @@ export async function fetchSheetConstants(): Promise<{
   };
 }
 
-function parseSnapshotRows(rawRows: Array<Record<string, string>>): SnapshotLedgerRow[] {
+const getCachedSheetConstants = unstable_cache(
+  loadSheetConstantsUncached,
+  ["alpha-engine-sheet-constants-v31"],
+  { revalidate: 300 }
+);
+
+export async function fetchSheetConstants(): Promise<SheetConstantsResult> {
+  if (!isGoogleSheetsConfigured()) {
+    return buildBaselineConstants();
+  }
+  try {
+    const data = await getCachedSheetConstants();
+    lastGoodConstants = data;
+    return data;
+  } catch {
+    if (lastGoodConstants) return lastGoodConstants;
+    return buildBaselineConstants();
+  }
+}
+
+function parseSnapshotRows(
+  rawRows: Array<Record<string, string>>
+): SnapshotLedgerRow[] {
   return rawRows.map((r) => ({
     timestamp_utc: r.timestamp_utc || "",
     ticker: r.ticker || "",
@@ -360,14 +486,7 @@ function parseSnapshotRows(rawRows: Array<Record<string, string>>): SnapshotLedg
   }));
 }
 
-export async function fetchSheetHistory(): Promise<{
-  source: "google_sheets" | "seed_only";
-  intraday: SnapshotLedgerRow[];
-  daily: SnapshotLedgerRow[];
-}> {
-  if (!isGoogleSheetsConfigured()) {
-    return { source: "seed_only", intraday: [], daily: [] };
-  }
+async function loadSheetHistoryUncached(): Promise<SheetHistoryResult> {
   const sheetId = process.env.GOOGLE_SHEET_ID as string;
   const token = await getGoogleAccessToken();
   const url =
@@ -375,10 +494,14 @@ export async function fetchSheetHistory(): Promise<{
     encodeURIComponent(sheetId) +
     "/values:batchGet?ranges=Intraday_Snapshots!A1:V1500&ranges=Daily_History!A1:V1500";
 
-  const res = await fetch(url, {
-    headers: { Authorization: "Bearer " + token },
-    next: { revalidate: 120 },
-  });
+  const res = await fetchWithTimeout(
+    url,
+    {
+      headers: { Authorization: "Bearer " + token },
+      cache: "no-store",
+    },
+    6000
+  );
   if (!res.ok) {
     throw new Error("Sheets history batchGet failed with status " + res.status);
   }
@@ -391,6 +514,26 @@ export async function fetchSheetHistory(): Promise<{
     intraday: parseSnapshotRows(rowsToObjects(ranges[0]?.values)),
     daily: parseSnapshotRows(rowsToObjects(ranges[1]?.values)),
   };
+}
+
+const getCachedSheetHistory = unstable_cache(
+  loadSheetHistoryUncached,
+  ["alpha-engine-sheet-history-v31"],
+  { revalidate: 120 }
+);
+
+export async function fetchSheetHistory(): Promise<SheetHistoryResult> {
+  if (!isGoogleSheetsConfigured()) {
+    return { source: "seed_only", intraday: [], daily: [] };
+  }
+  try {
+    const data = await getCachedSheetHistory();
+    lastGoodHistory = data;
+    return data;
+  } catch {
+    if (lastGoodHistory) return lastGoodHistory;
+    return { source: "seed_only", intraday: [], daily: [] };
+  }
 }
 
 export async function appendSheetSnapshots(
@@ -433,15 +576,19 @@ export async function appendSheetSnapshots(
     encodeURIComponent(tabName + "!A1:V1") +
     ":append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS";
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: "Bearer " + token,
-      "Content-Type": "application/json",
+  const res = await fetchWithTimeout(
+    url,
+    {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + token,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ values }),
+      cache: "no-store",
     },
-    body: JSON.stringify({ values }),
-    cache: "no-store",
-  });
+    8000
+  );
 
   if (!res.ok) {
     const errTxt = await res.text();
