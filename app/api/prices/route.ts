@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { INITIAL_MARKET_PRICES } from "@/lib/baselines";
 
-export const revalidate = 60;
+export const dynamic = "force-dynamic";
 
 type MarketSession = "OVERNIGHT" | "PRE" | "REGULAR" | "POST" | "CLOSED";
 
@@ -50,6 +50,14 @@ interface YahooChartResult {
   };
 }
 
+const EMPTY_QUOTE: QuoteSnapshot = {
+  price: null,
+  regularPrice: null,
+  changePct: 0,
+  extChangePct: 0,
+  session: "CLOSED",
+};
+
 const YAHOO_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
@@ -58,7 +66,6 @@ const YAHOO_HEADERS = {
   Accept: "application/json",
 };
 
-// Cached in module memory across warm Vercel invocations (30 min TTL)
 let cachedYahooAuth: {
   cookie: string;
   crumb: string;
@@ -66,17 +73,17 @@ let cachedYahooAuth: {
 } | null = null;
 
 function extractCookies(res: Response): string {
-  const headersWithSetCookie = res.headers as Headers & {
+  const headerBag = res.headers as unknown as {
     getSetCookie?: () => string[];
   };
   const rawList =
-    typeof headersWithSetCookie.getSetCookie === "function"
-      ? headersWithSetCookie.getSetCookie()
-      : [res.headers.get("set-cookie") || ""].filter(Boolean);
+    typeof headerBag.getSetCookie === "function"
+      ? headerBag.getSetCookie()
+      : [res.headers.get("set-cookie") || ""].filter((s) => s.length > 0);
 
   return rawList
-    .map((c) => c.split(";")[0]?.trim())
-    .filter(Boolean)
+    .map((c) => (c.split(";")[0] || "").trim())
+    .filter((s) => s.length > 0)
     .join("; ");
 }
 
@@ -94,7 +101,6 @@ async function getYahooAuth(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 4000);
   try {
-    // Step 1: Grab Yahoo A3 session cookie (fc.yahoo.com intentionally returns 404 with Set-Cookie)
     let cookie = "";
     const fcRes = await fetch("https://fc.yahoo.com", {
       headers: { "User-Agent": YAHOO_USER_AGENT },
@@ -118,7 +124,6 @@ async function getYahooAuth(
       return null;
     }
 
-    // Step 2: Mint CSRF crumb tied to session cookie
     const crumbRes = await fetch(
       "https://query2.finance.yahoo.com/v1/test/getcrumb",
       {
@@ -172,7 +177,6 @@ function parseYahooV7Item(q: YahooV7QuoteItem): QuoteSnapshot {
     };
   }
 
-  // Outside regular hours: pick whichever session has the newest trade timestamp >= regularMarketTime
   type Candidate = {
     session: MarketSession;
     price: number;
@@ -217,7 +221,7 @@ function parseYahooV7Item(q: YahooV7QuoteItem): QuoteSnapshot {
   addExtCandidate("PRE", q.preMarketPrice, q.preMarketTime, state === "PRE");
 
   candidates.sort((a, b) => b.time - a.time);
-  const winner = candidates[0];
+  const winner: Candidate | undefined = candidates[0];
 
   const activePrice = winner ? winner.price : regPrice;
   const nowSec = Math.floor(Date.now() / 1000);
@@ -242,7 +246,6 @@ function parseYahooV7Item(q: YahooV7QuoteItem): QuoteSnapshot {
     session = "POST";
   }
 
-  // Measure extended/overnight move relative to Friday's/prior 4 PM close when extended print is active
   const baseClose =
     winner && winner.session !== "REGULAR" && regPrice
       ? regPrice
@@ -267,7 +270,6 @@ function parseYahooV7Item(q: YahooV7QuoteItem): QuoteSnapshot {
   };
 }
 
-// Primary batch quote fetcher (includes Blue Ocean ATS 24/5 overnightMarketPrice)
 async function fetchYahooV7BatchQuotes(
   symbols: readonly string[]
 ): Promise<Record<string, QuoteSnapshot> | null> {
@@ -321,7 +323,6 @@ async function fetchYahooV7BatchQuotes(
   return null;
 }
 
-// Keyless fallback for pre/post/regular if v7 crumb ever gets throttled
 async function fetchYahooV8ExtendedFallback(
   symbol: string
 ): Promise<QuoteSnapshot> {
@@ -338,29 +339,13 @@ async function fetchYahooV8ExtendedFallback(
       signal: controller.signal,
     });
     clearTimeout(timer);
-    if (!res.ok) {
-      return {
-        price: null,
-        regularPrice: null,
-        changePct: 0,
-        extChangePct: 0,
-        session: "CLOSED",
-      };
-    }
+    if (!res.ok) return EMPTY_QUOTE;
 
     const json = (await res.json()) as {
       chart?: { result?: YahooChartResult[] };
     };
     const item = json.chart?.result?.[0];
-    if (!item) {
-      return {
-        price: null,
-        regularPrice: null,
-        changePct: 0,
-        extChangePct: 0,
-        session: "CLOSED",
-      };
-    }
+    if (!item) return EMPTY_QUOTE;
 
     const regPrice =
       typeof item.meta?.regularMarketPrice === "number" &&
@@ -457,17 +442,10 @@ async function fetchYahooV8ExtendedFallback(
     };
   } catch {
     clearTimeout(timer);
-    return {
-      price: null,
-      regularPrice: null,
-      changePct: 0,
-      extChangePct: 0,
-      session: "CLOSED",
-    };
+    return EMPTY_QUOTE;
   }
 }
 
-// Daily 35d fetch strictly for BTC-USD (24/7 live price + 30d realized vol)
 async function fetchYahooBtcDaily(): Promise<{
   price: number | null;
   changePct: number;
@@ -501,7 +479,7 @@ async function fetchYahooBtcDaily(): Promise<{
       typeof item.meta?.regularMarketPrice === "number"
         ? item.meta.regularMarketPrice
         : closes.length > 0
-        ? closes[closes.length - 1]
+        ? (closes[closes.length - 1] ?? null)
         : null;
 
     const prev =
@@ -520,4 +498,147 @@ async function fetchYahooBtcDaily(): Promise<{
   }
 }
 
-function computeAnnualizedRealizedVol
+function computeAnnualizedRealizedVol(closes: number[]): number | null {
+  if (closes.length < 15) return null;
+  const logRets: number[] = [];
+  for (let i = 1; i < closes.length; i++) {
+    const cur = closes[i];
+    const prev = closes[i - 1];
+    if (cur && prev) logRets.push(Math.log(cur / prev));
+  }
+  if (logRets.length < 2) return null;
+  const mean = logRets.reduce((a, b) => a + b, 0) / logRets.length;
+  const variance =
+    logRets.reduce((acc, r) => acc + (r - mean) * (r - mean), 0) /
+    (logRets.length - 1);
+  return Math.sqrt(variance * 365.0);
+}
+
+async function fetchCoinGeckoBtc(): Promise<{
+  price: number | null;
+  changePct: number;
+}> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3500);
+  try {
+    const res = await fetch(
+      "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true",
+      { cache: "no-store", signal: controller.signal }
+    );
+    clearTimeout(timer);
+    if (!res.ok) return { price: null, changePct: 0 };
+    const data = (await res.json()) as {
+      bitcoin?: { usd?: number; usd_24h_change?: number };
+    };
+    return {
+      price: typeof data.bitcoin?.usd === "number" ? data.bitcoin.usd : null,
+      changePct: Number(data.bitcoin?.usd_24h_change || 0),
+    };
+  } catch {
+    clearTimeout(timer);
+    return { price: null, changePct: 0 };
+  }
+}
+
+export async function GET() {
+  const equitySymbols = [
+    "ASST",
+    "MSTR",
+    "SATA",
+    "STRF",
+    "STRC",
+    "STRK",
+    "STRD",
+  ] as const;
+
+  const [btcResult, v7Quotes] = await Promise.all([
+    fetchYahooBtcDaily(),
+    fetchYahooV7BatchQuotes(equitySymbols),
+  ]);
+
+  let feedSource = v7Quotes
+    ? "yahoo_v7_overnight_24_5"
+    : "yahoo_v8_extended_fallback";
+
+  const bySym: Record<string, QuoteSnapshot> = {};
+  const missingSymbols = equitySymbols.filter((s) => !v7Quotes?.[s]);
+
+  if (v7Quotes) {
+    for (const s of equitySymbols) {
+      const q = v7Quotes[s];
+      if (q) bySym[s] = q;
+    }
+  }
+
+  if (missingSymbols.length > 0) {
+    const fallbacks = await Promise.all(
+      missingSymbols.map((s) => fetchYahooV8ExtendedFallback(s))
+    );
+    missingSymbols.forEach((s, idx) => {
+      bySym[s] = fallbacks[idx] ?? EMPTY_QUOTE;
+    });
+  }
+
+  let btcPrice = btcResult.price;
+  let btcChange24h = btcResult.changePct;
+
+  if (!btcPrice) {
+    const cg = await fetchCoinGeckoBtc();
+    if (cg.price) {
+      btcPrice = cg.price;
+      btcChange24h = cg.changePct;
+      feedSource = "coingecko_plus_fallback";
+    } else {
+      btcPrice = INITIAL_MARKET_PRICES.btc;
+      feedSource = "verified_baseline";
+    }
+  }
+
+  const realizedVol30d = computeAnnualizedRealizedVol(btcResult.closes);
+  const asstQ = bySym["ASST"] ?? EMPTY_QUOTE;
+  const mstrQ = bySym["MSTR"] ?? EMPTY_QUOTE;
+
+  const payload = {
+    source: feedSource,
+    updatedAt: new Date().toISOString(),
+    marketSession: mstrQ.session,
+    btc: btcPrice,
+    btcChange24h,
+    btcRealizedVol30d: realizedVol30d,
+    asst: asstQ.price ?? INITIAL_MARKET_PRICES.asst,
+    asstRegularClose: asstQ.regularPrice ?? INITIAL_MARKET_PRICES.asst,
+    asstChangePct: asstQ.changePct,
+    asstExtChangePct: asstQ.extChangePct,
+    mstr: mstrQ.price ?? INITIAL_MARKET_PRICES.mstr,
+    mstrRegularClose: mstrQ.regularPrice ?? INITIAL_MARKET_PRICES.mstr,
+    mstrChangePct: mstrQ.changePct,
+    mstrExtChangePct: mstrQ.extChangePct,
+    preferredQuotes: {
+      SATA:
+        (bySym["SATA"] ?? EMPTY_QUOTE).price ??
+        INITIAL_MARKET_PRICES.preferredQuotes.SATA,
+      SATS: INITIAL_MARKET_PRICES.preferredQuotes.SATS,
+      STRF_STRE:
+        (bySym["STRF"] ?? EMPTY_QUOTE).price ??
+        INITIAL_MARKET_PRICES.preferredQuotes.STRF_STRE,
+      STRC:
+        (bySym["STRC"] ?? EMPTY_QUOTE).price ??
+        INITIAL_MARKET_PRICES.preferredQuotes.STRC,
+      STRK:
+        (bySym["STRK"] ?? EMPTY_QUOTE).price ??
+        INITIAL_MARKET_PRICES.preferredQuotes.STRK,
+      STRD:
+        (bySym["STRD"] ?? EMPTY_QUOTE).price ??
+        INITIAL_MARKET_PRICES.preferredQuotes.STRD,
+    },
+  };
+
+  return NextResponse.json(payload, {
+    headers: {
+      "Cache-Control": "public, s-maxage=60, stale-while-revalidate=60",
+      "CDN-Cache-Control": "public, s-maxage=60, stale-while-revalidate=60",
+      "Vercel-CDN-Cache-Control":
+        "public, s-maxage=60, stale-while-revalidate=60",
+    },
+  });
+}
