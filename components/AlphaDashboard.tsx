@@ -149,24 +149,36 @@ function fmtPct(val: number | undefined, decimals: number = 1): string {
   return num.toFixed(decimals) + "%";
 }
 
-function calcCebeAmp(
-  res: Pick<ValuationResult, "v0" | "s0" | "k0GrossPar">
+/**
+ * Strive Amplification Ratio (%):
+ * (Total Debt + Stated Preferred Notional Outstanding) / Market Value of BTC Holdings
+ * Formula: (K_0 / V_0) * 100
+ */
+function calcAmplificationPct(
+  res: Pick<ValuationResult, "v0" | "k0GrossPar">
 ): number | null {
-  const netReserve = res.s0 - res.k0GrossPar;
-  if (netReserve <= 0 || res.v0 <= 0) return null;
-  return res.v0 / netReserve;
+  if (res.v0 <= 0) return null;
+  return (res.k0GrossPar / res.v0) * 100.0;
 }
 
-function calcStructuralAmp(
-  res: Pick<ValuationResult, "v0" | "deltaNet" | "eModel">
+/**
+ * Net Amplification Ratio (% ex-Cash):
+ * max(0, Total Debt + Stated Preferred Notional - Fiat Cash Reserve) / BTC Market Value
+ * Formula: (max(0, K_0 - C_0) / V_0) * 100
+ */
+function calcNetAmplificationPct(
+  res: Pick<ValuationResult, "v0" | "c0" | "k0GrossPar">
 ): number | null {
-  if (res.eModel <= 0 || res.v0 * res.deltaNet <= 0) return null;
-  return (res.v0 * res.deltaNet) / res.eModel;
+  if (res.v0 <= 0) return null;
+  return (Math.max(0, res.k0GrossPar - res.c0) / res.v0) * 100.0;
 }
 
-function fmtAmp(val: number | null | undefined): string {
+function fmtAmpPct(
+  val: number | null | undefined,
+  decimals: number = 1
+): string {
   if (val === null || val === undefined || !Number.isFinite(val)) return "N/A";
-  return val.toFixed(2) + "x";
+  return val.toFixed(decimals) + "%";
 }
 
 async function copyTextSafe(text: string): Promise<boolean> {
@@ -585,8 +597,8 @@ export default function AlphaDashboard() {
         tCycle,
         solvencyCap
       );
-      const aCebeAmp = calcCebeAmp(aEval);
-      const mCebeAmp = calcCebeAmp(mEval);
+      const aAmpPct = calcAmplificationPct(aEval);
+      const mAmpPct = calcAmplificationPct(mEval);
       return {
         date: label,
         btc: Number(btc.toFixed(2)),
@@ -594,13 +606,13 @@ export default function AlphaDashboard() {
         asstFair: Number(aEval.fairValuePerSh.toFixed(2)),
         asstCebe: Number(aEval.cebePerSh.toFixed(2)),
         asstHurdle: Number(aEval.annualHurdlePct.toFixed(2)),
-        asstAmp: aCebeAmp !== null ? Number(aCebeAmp.toFixed(2)) : null,
+        asstAmp: aAmpPct !== null ? Number(aAmpPct.toFixed(1)) : null,
         asstUnencSats: Math.round(aEval.unencumberedSatsPerSh),
         mstrPrice: mstrPx,
         mstrFair: Number(mEval.fairValuePerSh.toFixed(2)),
         mstrCebe: Number(mEval.cebePerSh.toFixed(2)),
         mstrHurdle: Number(mEval.annualHurdlePct.toFixed(2)),
-        mstrAmp: mCebeAmp !== null ? Number(mCebeAmp.toFixed(2)) : null,
+        mstrAmp: mAmpPct !== null ? Number(mAmpPct.toFixed(1)) : null,
         mstrUnencSats: Math.round(mEval.unencumberedSatsPerSh),
       };
     };
@@ -720,10 +732,10 @@ export default function AlphaDashboard() {
         tCycle,
         solvencyCap
       );
-      const aCebeRaw = calcCebeAmp(aRes);
-      const mCebeRaw = calcCebeAmp(mRes);
-      const aStructRaw = calcStructuralAmp(aRes);
-      const mStructRaw = calcStructuralAmp(mRes);
+      const aGrossRaw = calcAmplificationPct(aRes);
+      const mGrossRaw = calcAmplificationPct(mRes);
+      const aNetRaw = calcNetAmplificationPct(aRes);
+      const mNetRaw = calcNetAmplificationPct(mRes);
 
       return {
         btcK: "$" + px / 1000 + "k",
@@ -732,25 +744,25 @@ export default function AlphaDashboard() {
         asstCebe: Number(aRes.cebePerSh.toFixed(2)),
         asstSats: Math.round(aRes.unencumberedSatsPerSh),
         asstRawSats: Math.round(aRes.rawSatsPerSh),
-        asstCebeAmp:
-          aCebeRaw !== null && aCebeRaw <= 8
-            ? Number(aCebeRaw.toFixed(2))
+        asstGrossAmp:
+          aGrossRaw !== null && aGrossRaw <= 250
+            ? Number(aGrossRaw.toFixed(1))
             : null,
-        asstStructAmp:
-          aStructRaw !== null && aStructRaw <= 8
-            ? Number(aStructRaw.toFixed(2))
+        asstNetAmp:
+          aNetRaw !== null && aNetRaw <= 250
+            ? Number(aNetRaw.toFixed(1))
             : null,
         mstrFair: Number(mRes.fairValuePerSh.toFixed(2)),
         mstrCebe: Number(mRes.cebePerSh.toFixed(2)),
         mstrSats: Math.round(mRes.unencumberedSatsPerSh),
         mstrRawSats: Math.round(mRes.rawSatsPerSh),
-        mstrCebeAmp:
-          mCebeRaw !== null && mCebeRaw <= 8
-            ? Number(mCebeRaw.toFixed(2))
+        mstrGrossAmp:
+          mGrossRaw !== null && mGrossRaw <= 250
+            ? Number(mGrossRaw.toFixed(1))
             : null,
-        mstrStructAmp:
-          mStructRaw !== null && mStructRaw <= 8
-            ? Number(mStructRaw.toFixed(2))
+        mstrNetAmp:
+          mNetRaw !== null && mNetRaw <= 250
+            ? Number(mNetRaw.toFixed(1))
             : null,
         SATA: Number((aRes.tranchePrices["SATA"] ?? 0).toFixed(2)),
         SATS: Number((aRes.tranchePrices["SATS"] ?? 0).toFixed(2)),
@@ -1412,8 +1424,8 @@ export default function AlphaDashboard() {
                         (Math.max(0, res.k0GrossPar - res.c0) / res.v0) * 100
                       )
                     : 0;
-                const cebeAmp = calcCebeAmp(res);
-                const structAmp = calcStructuralAmp(res);
+                const grossAmpPct = calcAmplificationPct(res);
+                const netAmpPct = calcNetAmplificationPct(res);
                 const isDiscount = res.growthPremiumPerSh <= 0;
 
                 return (
@@ -1459,7 +1471,7 @@ export default function AlphaDashboard() {
                       </div>
                     </div>
 
-                    {/* Primary 4 KPIs Including Amplification */}
+                    {/* Primary 4 KPIs Including Strive Amplification Ratio (%) */}
                     <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
                       <div className="rounded-xl border border-slate-800/90 bg-slate-950/70 p-3 font-mono tabular-nums">
                         <div className="text-[10px] uppercase tracking-wider text-slate-400">
@@ -1470,6 +1482,41 @@ export default function AlphaDashboard() {
                         </div>
                         <div className="mt-0.5 text-[11px] text-slate-400">
                           CEBE: {fmtUsd(res.cebePerSh)}
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl border border-slate-800/90 bg-slate-950/70 p-3 font-mono tabular-nums">
+                        <div className="text-[10px] uppercase tracking-wider text-slate-400">
+                          Growth Premium
+                        </div>
+                        <div
+                          className={
+                            "mt-1 text-lg font-bold sm:text-xl " +
+                            (isDiscount ? "text-emerald-400" : "text-amber-300")
+                          }
+                        >
+                          {fmtSignedUsd(res.growthPremiumPerSh)}
+                        </div>
+                        <div className="mt-0.5 text-[11px] text-slate-400">
+                          {res.fairValuePerSh > 0
+                            ? (res.livePrice / res.fairValuePerSh).toFixed(2) +
+                              "x v3.1 FV"
+                            : "Underwater"}
+                        </div>
+                      </div>
+
+                      <div
+                        title="Amplification Ratio = (Total Debt + Stated Preferred Notional) / BTC Market Value (Strive formula). Ex-Cash subtracts fiat cash reserves."
+                        className="rounded-xl border border-violet-500/25 bg-slate-950/70 p-3 font-mono tabular-nums"
+                      >
+                        <div className="text-[10px] uppercase tracking-wider text-violet-300">
+                          Amplification
+                        </div>
+                        <div className="mt-1 text-lg font-bold text-violet-300 sm:text-xl">
+                          {fmtAmpPct(grossAmpPct, 1)}
+                        </div>
+                        <div className="mt-0.5 text-[11px] text-slate-400">
+                          Ex-Cash: {fmtAmpPct(netAmpPct, 1)}
                         </div>
                       </div>
 
@@ -1781,49 +1828,50 @@ export default function AlphaDashboard() {
                     <tr className="bg-violet-500/5 hover:bg-violet-500/10">
                       <td className="px-5 py-3 font-sans text-violet-200">
                         <div className="font-semibold">
-                          CEBE Amplification (BTC Reserve &divide; Net Reserve)
+                          Amplification Ratio ((Debt + Pref Par) &divide; BTC
+                          Reserve)
                         </div>
                         <div className="text-[11px] text-slate-500">
-                          % move in Spot CEBE backing per 1% BTC move (Strategy
-                          &amp; CEBE standard)
+                          Total debt + stated preferred notional as % of BTC
+                          market value (Strive standard)
                         </div>
                       </td>
                       <td className="px-4 py-3 text-right font-bold text-violet-300">
-                        {fmtAmp(calcCebeAmp(asstHv))}
+                        {fmtAmpPct(calcAmplificationPct(asstHv), 1)}
                       </td>
                       <td className="px-4 py-3 text-right font-bold text-violet-300">
-                        {fmtAmp(calcCebeAmp(asstCycle))}
+                        {fmtAmpPct(calcAmplificationPct(asstCycle), 1)}
                       </td>
                       <td className="px-4 py-3 text-right font-bold text-violet-300">
-                        {fmtAmp(calcCebeAmp(mstrHv))}
+                        {fmtAmpPct(calcAmplificationPct(mstrHv), 1)}
                       </td>
                       <td className="px-4 py-3 text-right font-bold text-violet-300">
-                        {fmtAmp(calcCebeAmp(mstrCycle))}
+                        {fmtAmpPct(calcAmplificationPct(mstrCycle), 1)}
                       </td>
                     </tr>
 
                     <tr className="hover:bg-slate-800/30">
                       <td className="px-5 py-3 font-sans text-slate-200">
                         <div className="font-medium">
-                          v3.1 Structural Amplification (V_0 &middot; Δ_net
-                          &divide; E_model)
+                          Net Amplification Ratio (Ex-Cash Senior Par &divide;
+                          BTC)
                         </div>
                         <div className="text-[11px] text-slate-500">
-                          Option-adjusted v3.1 Fair Value elasticity after
-                          Leland put &amp; convert dilution
+                          Senior debt &amp; preferred par net of fiat cash
+                          reserves as % of BTC market value
                         </div>
                       </td>
                       <td className="px-4 py-3 text-right font-semibold text-violet-200">
-                        {fmtAmp(calcStructuralAmp(asstHv))}
+                        {fmtAmpPct(calcNetAmplificationPct(asstHv), 1)}
                       </td>
                       <td className="px-4 py-3 text-right font-semibold text-violet-200">
-                        {fmtAmp(calcStructuralAmp(asstCycle))}
+                        {fmtAmpPct(calcNetAmplificationPct(asstCycle), 1)}
                       </td>
                       <td className="px-4 py-3 text-right font-semibold text-violet-200">
-                        {fmtAmp(calcStructuralAmp(mstrHv))}
+                        {fmtAmpPct(calcNetAmplificationPct(mstrHv), 1)}
                       </td>
                       <td className="px-4 py-3 text-right font-semibold text-violet-200">
-                        {fmtAmp(calcStructuralAmp(mstrCycle))}
+                        {fmtAmpPct(calcNetAmplificationPct(mstrCycle), 1)}
                       </td>
                     </tr>
 
@@ -2175,10 +2223,10 @@ export default function AlphaDashboard() {
                             </div>
                             <div className="rounded-lg border border-slate-800/80 bg-slate-950/80 p-2">
                               <div className="text-[10px] text-slate-500">
-                                CEBE Amp
+                                Amp Ratio
                               </div>
                               <div className="font-semibold text-violet-300">
-                                {fmtAmp(calcCebeAmp(res))}
+                                {fmtAmpPct(calcAmplificationPct(res), 1)}
                               </div>
                             </div>
                             <div className="rounded-lg border border-slate-800/80 bg-slate-950/80 p-2">
@@ -2364,7 +2412,8 @@ export default function AlphaDashboard() {
                           -{fmtInt(encumberedSats)} sats
                         </div>
                         <div className="text-[11px] text-slate-500">
-                          CEBE Amp: {fmtAmp(calcCebeAmp(activeRes))}
+                          Amp Ratio:{" "}
+                          {fmtAmpPct(calcAmplificationPct(activeRes), 1)}
                         </div>
                       </div>
                       <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3 font-mono tabular-nums">
@@ -2616,7 +2665,7 @@ export default function AlphaDashboard() {
                     {(
                       [
                         { id: "hurdle", label: "BTC-Yield Hurdle (%/yr)" },
-                        { id: "amp", label: "Amplification (x)" },
+                        { id: "amp", label: "Amplification (%)" },
                         { id: "asst_val", label: "$ASST Px vs. Fair Val" },
                         { id: "mstr_val", label: "$MSTR Px vs. Fair Val" },
                         { id: "sats", label: "Unencumbered Sats/Sh" },
@@ -2694,22 +2743,22 @@ export default function AlphaDashboard() {
                         <YAxis
                           stroke="#94a3b8"
                           tick={{ fontSize: 11 }}
-                          domain={[1, "auto"]}
-                          tickFormatter={(v) => v + "x"}
+                          domain={[0, "auto"]}
+                          tickFormatter={(v) => v + "%"}
                         />
                         <Tooltip
-                          content={<CustomChartTooltip unitSuffix="x" />}
+                          content={<CustomChartTooltip unitSuffix="%" />}
                         />
                         <Legend wrapperStyle={{ fontSize: "12px" }} />
                         <ReferenceLine
-                          y={1}
+                          y={60}
                           stroke="#64748b"
                           strokeDasharray="3 3"
                         />
                         <Line
                           type="monotone"
                           dataKey="asstAmp"
-                          name="$ASST CEBE Amplification"
+                          name="$ASST Amplification Ratio (%)"
                           stroke="#fb923c"
                           strokeWidth={2.8}
                           dot={{ r: 3.5 }}
@@ -2717,7 +2766,7 @@ export default function AlphaDashboard() {
                         <Line
                           type="monotone"
                           dataKey="mstrAmp"
-                          name="$MSTR CEBE Amplification"
+                          name="$MSTR Amplification Ratio (%)"
                           stroke="#38bdf8"
                           strokeWidth={2.8}
                           dot={{ r: 3.5 }}
@@ -2889,7 +2938,7 @@ export default function AlphaDashboard() {
                   {(
                     [
                       { id: "sats", label: "De-Encumbrance (Sats/Sh)" },
-                      { id: "amp", label: "Amplification Curve (x)" },
+                      { id: "amp", label: "Amplification Curve (%)" },
                       { id: "equity_asst", label: "$ASST Fair Val vs. CEBE" },
                       { id: "equity_mstr", label: "$MSTR Fair Val vs. CEBE" },
                     ] as const
@@ -2989,22 +3038,22 @@ export default function AlphaDashboard() {
                         <YAxis
                           stroke="#94a3b8"
                           tick={{ fontSize: 11 }}
-                          domain={[1, "auto"]}
-                          tickFormatter={(v) => v + "x"}
+                          domain={[0, "auto"]}
+                          tickFormatter={(v) => v + "%"}
                         />
                         <Tooltip
-                          content={<CustomChartTooltip unitSuffix="x" />}
+                          content={<CustomChartTooltip unitSuffix="%" />}
                         />
                         <Legend wrapperStyle={{ fontSize: "12px" }} />
                         <ReferenceLine
-                          y={1}
+                          y={60}
                           stroke="#64748b"
                           strokeDasharray="3 3"
                         />
                         <Line
                           type="monotone"
-                          dataKey="asstCebeAmp"
-                          name="$ASST CEBE Amplification"
+                          dataKey="asstGrossAmp"
+                          name="$ASST Amplification Ratio (%)"
                           stroke="#fb923c"
                           strokeWidth={2.8}
                           dot={false}
@@ -3012,8 +3061,8 @@ export default function AlphaDashboard() {
                         />
                         <Line
                           type="monotone"
-                          dataKey="asstStructAmp"
-                          name="$ASST v3.1 ODE Amplification"
+                          dataKey="asstNetAmp"
+                          name="$ASST Ex-Cash Amplification (%)"
                           stroke="#fb923c"
                           strokeDasharray="4 4"
                           strokeWidth={1.8}
@@ -3022,8 +3071,8 @@ export default function AlphaDashboard() {
                         />
                         <Line
                           type="monotone"
-                          dataKey="mstrCebeAmp"
-                          name="$MSTR CEBE Amplification"
+                          dataKey="mstrGrossAmp"
+                          name="$MSTR Amplification Ratio (%)"
                           stroke="#38bdf8"
                           strokeWidth={2.8}
                           dot={false}
@@ -3031,8 +3080,8 @@ export default function AlphaDashboard() {
                         />
                         <Line
                           type="monotone"
-                          dataKey="mstrStructAmp"
-                          name="$MSTR v3.1 ODE Amplification"
+                          dataKey="mstrNetAmp"
+                          name="$MSTR Ex-Cash Amplification (%)"
                           stroke="#38bdf8"
                           strokeDasharray="4 4"
                           strokeWidth={1.8}
