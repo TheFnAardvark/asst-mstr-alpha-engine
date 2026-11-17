@@ -127,7 +127,7 @@ return Math.round(Number(val) || 0).toLocaleString("en-US");
 }function fmtPct(val: number | undefined, decimals: number = 1): string {
 const num = Number(val) || 0;
 return num.toFixed(decimals) + "%";
-}/Industry-standard CEBE / Balance-Sheet Amplification:Amplification = BTC Reserve / Net Reserve = V_0 / (S_0 - K_0)Measures % change in unencumbered BTC backing per 1% move in BTC spot.
+}/Industry-standard CEBE / Balance-Sheet Amplification:Amplification = BTC Reserve / Net Reserve = V_0 / (S_0 - K_0)
 */
 function calcCebeAmp(
 res: Pick<ValuationResult, "v0" | "s0" | "k0GrossPar">
@@ -135,7 +135,7 @@ res: Pick<ValuationResult, "v0" | "s0" | "k0GrossPar">
 const netReserve = res.s0 - res.k0GrossPar;
 if (netReserve <= 0 || res.v0 <= 0) return null;
 return res.v0 / netReserve;
-}/v3.1 ODE Structural Amplification (Option-Adjusted Equity BTC Elasticity):Structural Amplification = (V_0 * Delta_Net) / E_modelMeasures % change in v3.1 Fair Value per 1% move in BTC spot after Leland put & convert dilution.
+}/v3.1 ODE Structural Amplification (Option-Adjusted Equity BTC Elasticity):Structural Amplification = (V_0 * Delta_Net) / E_model
 */
 function calcStructuralAmp(
 res: Pick<ValuationResult, "v0" | "deltaNet" | "eModel">
@@ -1356,7 +1356,7 @@ triggerToast("Restored active SEC Form 8-K & 424B5 ledger baselines.");
                   </div>
                 </div>
 
-                {/* Primary 4 KPIs (Now Including Amplification) */}
+                {/* Primary 4 KPIs Including Amplification */}
                 <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
                   <div className="rounded-xl border border-slate-800/90 bg-slate-950/70 p-3 font-mono tabular-nums">
                     <div className="text-[10px] uppercase tracking-wider text-slate-400">
@@ -1444,7 +1444,8 @@ triggerToast("Restored active SEC Form 8-K & 424B5 ledger baselines.");
                   </div>
                   <div className="mt-2 flex flex-wrap items-center justify-between gap-2 font-mono text-[11px] text-slate-400 tabular-nums">
                     <span>
-                      {unencPct.toFixed(1)}% Unencumbered ({netClaimsPct.toFixed(1)}% Net Claims)
+                      {unencPct.toFixed(1)}% Unencumbered (
+                      {netClaimsPct.toFixed(1)}% Net Claims)
                     </span>
                     <span>
                       Δ_net: {res.deltaNet.toFixed(3)} &bull; Eq-Imp BTC
