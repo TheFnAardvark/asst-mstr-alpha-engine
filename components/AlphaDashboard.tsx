@@ -1522,41 +1522,6 @@ export default function AlphaDashboard() {
 
                       <div className="rounded-xl border border-slate-800/90 bg-slate-950/70 p-3 font-mono tabular-nums">
                         <div className="text-[10px] uppercase tracking-wider text-slate-400">
-                          Growth Premium
-                        </div>
-                        <div
-                          className={
-                            "mt-1 text-lg font-bold sm:text-xl " +
-                            (isDiscount ? "text-emerald-400" : "text-amber-300")
-                          }
-                        >
-                          {fmtSignedUsd(res.growthPremiumPerSh)}
-                        </div>
-                        <div className="mt-0.5 text-[11px] text-slate-400">
-                          {res.fairValuePerSh > 0
-                            ? (res.livePrice / res.fairValuePerSh).toFixed(2) +
-                              "x v3.1 FV"
-                            : "Underwater"}
-                        </div>
-                      </div>
-
-                      <div
-                        title="CEBE Amplification = BTC Reserve / Net Reserve (Strategy & CEBE standard). v3.1 ODE = Option-adjusted Fair Value elasticity."
-                        className="rounded-xl border border-violet-500/25 bg-slate-950/70 p-3 font-mono tabular-nums"
-                      >
-                        <div className="text-[10px] uppercase tracking-wider text-violet-300">
-                          Amplification
-                        </div>
-                        <div className="mt-1 text-lg font-bold text-violet-300 sm:text-xl">
-                          {fmtAmp(cebeAmp)}
-                        </div>
-                        <div className="mt-0.5 text-[11px] text-slate-400">
-                          v3.1 ODE: {fmtAmp(structAmp)}
-                        </div>
-                      </div>
-
-                      <div className="rounded-xl border border-slate-800/90 bg-slate-950/70 p-3 font-mono tabular-nums">
-                        <div className="text-[10px] uppercase tracking-wider text-slate-400">
                           BTC-Yield Hurdle
                         </div>
                         <div className="mt-1 text-lg font-bold text-rose-400 sm:text-xl">
