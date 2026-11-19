@@ -815,4 +815,121 @@ export function YieldChartsTab({
                   <Line
                     yAxisId="right"
                     type="monotone"
-                    dataKey="mstrS
+                    dataKey="mstrSats"
+                    name="$MSTR Debt-Free Sats/Sh (Right)"
+                    stroke="#38bdf8"
+                    strokeWidth={2.8}
+                    dot={false}
+                  />
+                </LineChart>
+              ) : sweepMode === "amp" ? (
+                <LineChart
+                  data={btcSweepData}
+                  margin={{ top: 10, right: 24, left: 12, bottom: 5 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                  <XAxis
+                    dataKey="btcK"
+                    stroke="#94a3b8"
+                    tick={{ fontSize: 11 }}
+                  />
+                  <YAxis
+                    stroke="#94a3b8"
+                    tick={{ fontSize: 11 }}
+                    domain={[0, "auto"]}
+                    tickFormatter={(v) => v + "%"}
+                  />
+                  <Tooltip content={<CustomChartTooltip unitSuffix="%" />} />
+                  <Legend wrapperStyle={{ fontSize: "12px" }} />
+                  <ReferenceLine
+                    y={60}
+                    stroke="#64748b"
+                    strokeDasharray="3 3"
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="asstGrossAmp"
+                    name="$ASST Amplification Ratio (%)"
+                    stroke="#fb923c"
+                    strokeWidth={2.8}
+                    dot={false}
+                    connectNulls={false}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="asstNetAmp"
+                    name="$ASST Ex-Cash Amplification (%)"
+                    stroke="#fb923c"
+                    strokeDasharray="4 4"
+                    strokeWidth={1.8}
+                    dot={false}
+                    connectNulls={false}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="mstrGrossAmp"
+                    name="$MSTR Amplification Ratio (%)"
+                    stroke="#38bdf8"
+                    strokeWidth={2.8}
+                    dot={false}
+                    connectNulls={false}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="mstrNetAmp"
+                    name="$MSTR Ex-Cash Amplification (%)"
+                    stroke="#38bdf8"
+                    strokeDasharray="4 4"
+                    strokeWidth={1.8}
+                    dot={false}
+                    connectNulls={false}
+                  />
+                </LineChart>
+              ) : (
+                <ComposedChart
+                  data={btcSweepData}
+                  margin={{ top: 10, right: 24, left: 12, bottom: 5 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                  <XAxis
+                    dataKey="btcK"
+                    stroke="#94a3b8"
+                    tick={{ fontSize: 11 }}
+                  />
+                  <YAxis
+                    stroke="#94a3b8"
+                    tick={{ fontSize: 11 }}
+                    tickFormatter={(v) => "$" + v}
+                  />
+                  <Tooltip content={<CustomChartTooltip unitPrefix="$" />} />
+                  <Legend wrapperStyle={{ fontSize: "12px" }} />
+                  <Area
+                    type="monotone"
+                    dataKey={
+                      sweepMode === "equity_asst" ? "asstFair" : "mstrFair"
+                    }
+                    name="Model Fair Value (Includes Safety Cushion)"
+                    stroke="#34d399"
+                    fill="rgba(52, 211, 153, 0.16)"
+                    strokeWidth={2.8}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey={
+                      sweepMode === "equity_asst" ? "asstCebe" : "mstrCebe"
+                    }
+                    name="Hard Liquidation Floor (CEBE)"
+                    stroke="#f43f5e"
+                    strokeDasharray="4 4"
+                    strokeWidth={2}
+                    dot={false}
+                  />
+                </ComposedChart>
+              )}
+            </ResponsiveContainer>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
