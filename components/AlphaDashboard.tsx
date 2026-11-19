@@ -490,4 +490,871 @@ export default function AlphaDashboard() {
       >();
       for (const r of rows) {
         const key = (r.timestamp_utc || "").slice(0, sliceLen);
-        if (!key) continue
+       if (!key) continue;
+        const prev = grouped.get(key) || {};
+        if (r.ticker.toUpperCase() === "ASST") prev.asst = r;
+        if (r.ticker.toUpperCase() === "MSTR") prev.mstr = r;
+        grouped.set(key, prev);
+      }
+      return Array.from(grouped.entries())
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([key, pair]) => {
+          const btc = pair.asst?.btc_price || pair.mstr?.btc_price || btcPrice;
+          const aPx = pair.asst?.live_stock_price || asstPrice;
+          const mPx = pair.mstr?.live_stock_price || mstrPrice;
+          const label = sliceLen > 10 ? key.replace("T", " ") : key.slice(5);
+          return evaluateRawPoint(label, btc, aPx, mPx);
+        });
+    };
+
+    if (historyTimeframe === "intraday" && sheetIntradayRows.length > 0) {
+      const intra = pairSheetRows(sheetIntradayRows, 16);
+      const localPts = localSnapshots.map((s) =>
+        evaluateRawPoint(s.date, s.btc, s.asst, s.mstr)
+      );
+      return [
+        ...intra,
+        ...localPts,
+        evaluateRawPoint("Live", btcPrice, asstPrice, mstrPrice),
+      ];
+    }
+
+    const byDate = new Map<string, HistoricalChartPoint>();
+    for (const s of HISTORICAL_SEED) {
+      byDate.set(
+        s.date,
+        evaluateRawPoint(s.date.slice(5), s.btc, s.asst, s.mstr)
+      );
+    }
+    if (sheetDailyRows.length > 0) {
+      const groupedDaily = new Map<
+        string,
+        { asst?: ApiSnapshotRow; mstr?: ApiSnapshotRow }
+      >();
+      for (const r of sheetDailyRows) {
+        const dKey = (r.timestamp_utc || "").slice(0, 10);
+        if (!dKey) continue;
+        const prev = groupedDaily.get(dKey) || {};
+        if (r.ticker.toUpperCase() === "ASST") prev.asst = r;
+        if (r.ticker.toUpperCase() === "MSTR") prev.mstr = r;
+        groupedDaily.set(dKey, prev);
+      }
+      for (const [dKey, pair] of Array.from(groupedDaily.entries())) {
+        const btc = pair.asst?.btc_price || pair.mstr?.btc_price || btcPrice;
+        const aPx = pair.asst?.live_stock_price || asstPrice;
+        const mPx = pair.mstr?.live_stock_price || mstrPrice;
+        byDate.set(dKey, evaluateRawPoint(dKey.slice(5), btc, aPx, mPx));
+      }
+    }
+    const sortedDaily = Array.from(byDate.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([, val]) => val);
+    const localPts = localSnapshots.map((s) =>
+      evaluateRawPoint(s.date, s.btc, s.asst, s.mstr)
+    );
+    return [
+      ...sortedDaily,
+      ...localPts,
+      evaluateRawPoint("Live", btcPrice, asstPrice, mstrPrice),
+    ];
+  }, [
+    asstBs,
+    mstrBs,
+    btcPrice,
+    asstPrice,
+    mstrPrice,
+    activeSigma,
+    riskFreeRate,
+    tCycle,
+    solvencyCap,
+    historyTimeframe,
+    sheetIntradayRows,
+    sheetDailyRows,
+    localSnapshots,
+  ]);
+
+  // Chart 3: BTC Price Sweep ($10k - $200k)
+  const btcSweepData = useMemo<BtcSweepPoint[]>(() => {
+    const grid: number[] = [];
+    for (let px = 10000; px <= 200000; px += 5000) {
+      grid.push(px);
+    }
+    return grid.map((px) => {
+      const aRes = evaluateBalanceSheet(
+        asstBs,
+        px,
+        activeSigma,
+        asstPrice,
+        riskFreeRate,
+        tCycle,
+        solvencyCap
+      );
+      const mRes = evaluateBalanceSheet(
+        mstrBs,
+        px,
+        activeSigma,
+        mstrPrice,
+        riskFreeRate,
+        tCycle,
+        solvencyCap
+      );
+      const aGrossRaw = calcAmplificationPct(aRes);
+      const mGrossRaw = calcAmplificationPct(mRes);
+      const aNetRaw = calcNetAmplificationPct(aRes);
+      const mNetRaw = calcNetAmplificationPct(mRes);
+
+      return {
+        btcK: "$" + px / 1000 + "k",
+        btc: px,
+        asstFair: Number(aRes.fairValuePerSh.toFixed(2)),
+        asstCebe: Number(aRes.cebePerSh.toFixed(2)),
+        asstSats: Math.round(aRes.unencumberedSatsPerSh),
+        asstRawSats: Math.round(aRes.rawSatsPerSh),
+        asstGrossAmp:
+          aGrossRaw !== null && aGrossRaw <= 250
+            ? Number(aGrossRaw.toFixed(1))
+            : null,
+        asstNetAmp:
+          aNetRaw !== null && aNetRaw <= 250
+            ? Number(aNetRaw.toFixed(1))
+            : null,
+        mstrFair: Number(mRes.fairValuePerSh.toFixed(2)),
+        mstrCebe: Number(mRes.cebePerSh.toFixed(2)),
+        mstrSats: Math.round(mRes.unencumberedSatsPerSh),
+        mstrRawSats: Math.round(mRes.rawSatsPerSh),
+        mstrGrossAmp:
+          mGrossRaw !== null && mGrossRaw <= 250
+            ? Number(mGrossRaw.toFixed(1))
+            : null,
+        mstrNetAmp:
+          mNetRaw !== null && mNetRaw <= 250
+            ? Number(mNetRaw.toFixed(1))
+            : null,
+        SATA: Number((aRes.tranchePrices["SATA"] ?? 0).toFixed(2)),
+        SATS: Number((aRes.tranchePrices["SATS"] ?? 0).toFixed(2)),
+        STRF_STRE: Number((mRes.tranchePrices["STRF_STRE"] ?? 0).toFixed(2)),
+        STRC: Number((mRes.tranchePrices["STRC"] ?? 0).toFixed(2)),
+        STRK: Number((mRes.tranchePrices["STRK"] ?? 0).toFixed(2)),
+        STRD: Number((mRes.tranchePrices["STRD"] ?? 0).toFixed(2)),
+      };
+    });
+  }, [
+    asstBs,
+    mstrBs,
+    activeSigma,
+    asstPrice,
+    mstrPrice,
+    riskFreeRate,
+    tCycle,
+    solvencyCap,
+  ]);
+
+  // Dynamic Open-Source AI Audit Payloads
+  const auditInput = useMemo(
+    () => ({
+      asstBs,
+      mstrBs,
+      btcPrice,
+      asstPrice,
+      mstrPrice,
+      activeSigma,
+      hvSigma,
+      cycleSigma,
+      riskFreeRate,
+      tCycle,
+      asstActive,
+      mstrActive,
+      asstHv,
+      asstCycle,
+      mstrHv,
+      mstrCycle,
+    }),
+    [
+      asstBs,
+      mstrBs,
+      btcPrice,
+      asstPrice,
+      mstrPrice,
+      activeSigma,
+      hvSigma,
+      cycleSigma,
+      riskFreeRate,
+      tCycle,
+      asstActive,
+      mstrActive,
+      asstHv,
+      asstCycle,
+      mstrHv,
+      mstrCycle,
+    ]
+  );
+
+  const llmAuditPrompt = useMemo(
+    () => buildLlmAuditPrompt(auditInput),
+    [auditInput]
+  );
+  const stateTraceMarkdown = useMemo(
+    () =>
+      buildStateTraceMarkdown({
+        asstBs,
+        mstrBs,
+        btcPrice,
+        activeSigma,
+        riskFreeRate,
+        asstActive,
+        mstrActive,
+      }),
+    [
+      asstBs,
+      mstrBs,
+      btcPrice,
+      activeSigma,
+      riskFreeRate,
+      asstActive,
+      mstrActive,
+    ]
+  );
+  const pythonVerifierCode = useMemo(
+    () =>
+      buildPythonVerifierScript({
+        asstBs,
+        mstrBs,
+        btcPrice,
+        asstPrice,
+        mstrPrice,
+        activeSigma,
+        hvSigma,
+        cycleSigma,
+        riskFreeRate,
+        tCycle,
+      }),
+    [
+      asstBs,
+      mstrBs,
+      btcPrice,
+      asstPrice,
+      mstrPrice,
+      activeSigma,
+      hvSigma,
+      cycleSigma,
+      riskFreeRate,
+      tCycle,
+    ]
+  );
+  const fullAuditBundleText = useMemo(
+    () => buildFullAuditBundle(auditInput),
+    [auditInput]
+  );
+
+  const publicConstantsJson = useMemo(
+    () =>
+      JSON.stringify(
+        {
+          endpoint: "/api/constants",
+          source: constantsSource,
+          config: modelConfig,
+          issuers: { ASST: asstBs, MSTR: mstrBs },
+        },
+        null,
+        2
+      ),
+    [constantsSource, modelConfig, asstBs, mstrBs]
+  );
+
+  const handleCopyAuditItem = useCallback(
+    async (key: string, text: string, label: string) => {
+      try {
+        await copyTextSafe(text);
+        setCopiedAuditKey(key);
+        triggerToast("Copied " + label + " to clipboard.");
+        setTimeout(() => {
+          setCopiedAuditKey((prev) => (prev === key ? null : prev));
+        }, 2500);
+      } catch {
+        triggerToast("Select text directly to copy.");
+      }
+    },
+    [triggerToast]
+  );
+
+  const handleLogLocalSnapshot = () => {
+    const label = new Date().toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    setLocalSnapshots((prev) => [
+      ...prev,
+      {
+        date: "Tick " + label,
+        btc: btcPrice,
+        asst: asstPrice,
+        mstr: mstrPrice,
+      },
+    ]);
+    triggerToast("Pinned current snapshot to your local chart preview.");
+  };
+
+  const handleResetToLive = () => {
+    setBtcPrice(liveFeedPrices.btc);
+    setAsstPrice(liveFeedPrices.asst);
+    setMstrPrice(liveFeedPrices.mstr);
+    setRiskFreeRate(modelConfig.riskFreeRate);
+    setVolMode("hv");
+    setCustomSigma(hvSigma);
+    setIsSandboxOverride(false);
+    triggerToast("Reset prices and volatility back to live market data.");
+  };
+
+  const updateBsField = (
+    ticker: "ASST" | "MSTR",
+    field: "btcHoldings" | "cashReserves" | "basicShares" | "equityIv30d",
+    rawVal: string
+  ) => {
+    const num = Number(rawVal);
+    if (Number.isNaN(num) || num < 0) return;
+    setHasBsOverride(true);
+    if (ticker === "ASST") {
+      setAsstBs((prev) => ({ ...prev, [field]: num }));
+    } else {
+      setMstrBs((prev) => ({ ...prev, [field]: num }));
+    }
+  };
+
+  const updateTrancheField = (
+    ticker: "ASST" | "MSTR",
+    trancheName: string,
+    field: "parTotal" | "couponRate",
+    rawVal: string
+  ) => {
+    const num = Number(rawVal);
+    if (Number.isNaN(num) || num < 0) return;
+    setHasBsOverride(true);
+    const updater = (prev: TreasuryBalanceSheet): TreasuryBalanceSheet => ({
+      ...prev,
+      strkParInTiers:
+        trancheName === "STRK" && field === "parTotal"
+          ? num
+          : prev.strkParInTiers,
+      preferreds: prev.preferreds.map((t: PreferredTranche) =>
+        t.name === trancheName ? { ...t, [field]: num } : t
+      ),
+    });
+    if (ticker === "ASST") {
+      setAsstBs(updater);
+    } else {
+      setMstrBs(updater);
+    }
+  };
+
+  const handleReset8KBaselines = () => {
+    setAsstBs(serverAsstBs);
+    setMstrBs(serverMstrBs);
+    setHasBsOverride(false);
+    triggerToast("Restored official SEC filing balance sheets.");
+  };
+
+  const handleRerunAudit = () => {
+    const nextReport = executeInvariantSuite(
+      asstBs,
+      mstrBs,
+      riskFreeRate,
+      tCycle
+    );
+    setAuditReport(nextReport);
+    triggerToast(
+      "Checked " +
+        nextReport.evaluations +
+        " scenarios in " +
+        nextReport.elapsedMs.toFixed(1) +
+        "ms — " +
+        (nextReport.allPassed ? "ALL 8 CHECKS PASSED" : "Review warnings")
+    );
+  };
+
+  const activeVolTermKey =
+    volMode === "hv"
+      ? "vol_1y_hv"
+      : volMode === "cycle"
+      ? "vol_cycle"
+      : "vol_custom";
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 selection:bg-orange-500/30 selection:text-orange-200">
+      {toastMessage && (
+        <div className="fixed bottom-5 right-5 z-50 flex max-w-md items-center gap-2.5 rounded-lg border border-orange-500/40 bg-slate-900/95 px-4 py-3 text-xs font-medium text-slate-100 shadow-2xl backdrop-blur-md">
+          <Zap className="h-4 w-4 shrink-0 text-orange-400" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
+      {/* TOP HEADER */}
+      <header className="sticky top-0 z-30 border-b border-slate-800/90 bg-slate-950/90 backdrop-blur-md">
+        <div className="mx-auto max-w-7xl px-4 py-3 sm:px-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-orange-500/40 bg-gradient-to-br from-orange-500/20 to-amber-500/5 text-orange-400 shadow-inner">
+                <Activity className="h-5 w-5" />
+              </div>
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h1 className="text-sm font-bold tracking-tight text-white sm:text-base">
+                    ASST &amp; MSTR Bitcoin Treasury Alpha Engine
+                  </h1>
+                  <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-emerald-400">
+                    v{modelConfig.engineVersion} Model
+                  </span>
+                  {(isSandboxOverride || hasBsOverride) && (
+                    <span className="rounded border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-amber-300">
+                      WHAT-IF MODE
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  Live Structural Valuation &bull; Preferred Payout Waterfall
+                  &bull; Open-Source Math
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center divide-x divide-slate-800 rounded-lg border border-slate-800 bg-slate-900/80 px-2.5 py-1.5 font-mono text-xs tabular-nums">
+                <div className="flex items-center gap-1.5 pr-2.5">
+                  <span
+                    className={
+                      "h-2 w-2 rounded-full " +
+                      (isSandboxOverride
+                        ? "bg-amber-400"
+                        : feedStatus === "LIVE"
+                        ? "bg-emerald-400 animate-pulse"
+                        : "bg-sky-400")
+                    }
+                  />
+                  <span className="text-slate-400">BTC</span>
+                  <span className="font-semibold text-orange-400">
+                    {fmtUsd(btcPrice, 2)}
+                  </span>
+                </div>
+                <div className="px-2.5">
+                  <span className="text-slate-400">ASST </span>
+                  <span className="font-semibold text-white">
+                    {fmtUsd(asstPrice)}
+                  </span>
+                </div>
+                <div className="pl-2.5">
+                  <span className="text-slate-400">MSTR </span>
+                  <span className="font-semibold text-sky-400">
+                    {fmtUsd(mstrPrice)}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-900/90 p-0.5 font-mono text-[11px]">
+                <button
+                  type="button"
+                  onClick={() => setVolMode("hv")}
+                  className={
+                    "rounded-md px-2.5 py-1 transition " +
+                    (volMode === "hv"
+                      ? "bg-slate-800 font-semibold text-white shadow-sm"
+                      : "text-slate-400 hover:text-slate-200")
+                  }
+                >
+                  {(hvSigma * 100).toFixed(1)}% 1Y Vol
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setVolMode("cycle")}
+                  className={
+                    "rounded-md px-2.5 py-1 transition " +
+                    (volMode === "cycle"
+                      ? "bg-slate-800 font-semibold text-white shadow-sm"
+                      : "text-slate-400 hover:text-slate-200")
+                  }
+                >
+                  {(cycleSigma * 100).toFixed(1)}% Cycle Vol
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setVolMode("custom");
+                    setSandboxOpen(true);
+                  }}
+                  className={
+                    "rounded-md px-2.5 py-1 transition " +
+                    (volMode === "custom"
+                      ? "bg-orange-500/20 font-semibold text-orange-300"
+                      : "text-slate-400 hover:text-slate-200")
+                  }
+                >
+                  {volMode === "custom"
+                    ? (customSigma * 100).toFixed(1) + "% Custom"
+                    : "Custom Vol"}
+                </button>
+                <div className="px-1.5">
+                  <TermExplainer
+                    termKey={activeVolTermKey}
+                    iconOnly
+                    iconClassName="h-3.5 w-3.5"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => syncAllServerData(true)}
+                title={lastPolledAt}
+                className="flex items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-slate-300 transition hover:border-slate-700 hover:bg-slate-800 hover:text-white"
+              >
+                <RefreshCw
+                  className={
+                    "h-3.5 w-3.5 " +
+                    (feedStatus === "POLLING"
+                      ? "animate-spin text-orange-400"
+                      : "")
+                  }
+                />
+                <span className="hidden sm:inline">Refresh</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleLogLocalSnapshot}
+                title="Pin the current prices as a temporary point on the historical chart"
+                className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-xs font-medium text-emerald-300 transition hover:bg-emerald-500/20"
+              >
+                <PlusCircle className="h-3.5 w-3.5" />
+                <span className="hidden md:inline">Pin Tick</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSandboxOpen((prev) => !prev)}
+                className={
+                  "flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition " +
+                  (sandboxOpen || isSandboxOverride
+                    ? "border-orange-500/50 bg-orange-500/15 text-orange-300"
+                    : "border-slate-800 bg-slate-900 text-slate-300 hover:border-slate-700 hover:text-white")
+                }
+              >
+                <Sliders className="h-3.5 w-3.5" />
+                <span>Stress-Test</span>
+                {sandboxOpen ? (
+                  <ChevronUp className="h-3.5 w-3.5" />
+                ) : (
+                  <ChevronDown className="h-3.5 w-3.5" />
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* WHAT-IF STRESS-TEST DRAWER */}
+          {sandboxOpen && (
+            <div className="mt-3 rounded-xl border border-slate-800 bg-slate-900/90 p-4 shadow-xl">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-200">
+                  <Sliders className="h-4 w-4 text-orange-400" />
+                  <span>What-If Price &amp; Volatility Stress-Test</span>
+                  <span className="font-mono text-[11px] font-normal text-slate-400">
+                    (Runs privately in your browser &mdash; never alters live
+                    data)
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {[
+                    { label: "Crash $25k", btc: 25000, sig: 0.75 },
+                    { label: "Bear $45k", btc: 45000, sig: 0.55 },
+                    { label: "Breakout $100k", btc: 100000, sig: 0.5 },
+                    { label: "Supercycle $150k", btc: 150000, sig: 0.6 },
+                  ].map((preset) => (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      onClick={() => {
+                        setBtcPrice(preset.btc);
+                        setCustomSigma(preset.sig);
+                        setVolMode("custom");
+                        setIsSandboxOverride(true);
+                      }}
+                      className="rounded border border-slate-700 bg-slate-800/80 px-2 py-1 font-mono text-[11px] text-slate-300 transition hover:border-orange-500/40 hover:text-orange-300"
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={handleResetToLive}
+                    className="flex items-center gap-1 rounded border border-slate-700 bg-slate-950 px-2.5 py-1 text-xs font-medium text-slate-200 transition hover:border-emerald-500/40 hover:text-emerald-300"
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    Reset Live
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="rounded-lg border border-slate-800/80 bg-slate-950/60 p-3">
+                  <div className="mb-1 flex items-center justify-between font-mono text-xs">
+                    <span className="text-slate-400">Bitcoin Spot Price</span>
+                    <span className="font-bold text-orange-400">
+                      {fmtUsd(btcPrice, 0)}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={15000}
+                    max={250000}
+                    step={500}
+                    aria-label="Bitcoin Spot Price"
+                    value={btcPrice}
+                    onChange={(e) => {
+                      setBtcPrice(Number(e.target.value));
+                      setIsSandboxOverride(true);
+                    }}
+                    className="w-full accent-orange-500"
+                  />
+                  <div className="mt-1 flex justify-between font-mono text-[10px] text-slate-500">
+                    <span>$15k</span>
+                    <span>$100k</span>
+                    <span>$250k</span>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-slate-800/80 bg-slate-950/60 p-3">
+                  <div className="mb-1 flex items-center justify-between font-mono text-xs">
+                    <TermExplainer
+                      termKey="vol_custom"
+                      className="text-slate-400"
+                    >
+                      Bitcoin Volatility
+                    </TermExplainer>
+                    <span className="font-bold text-amber-300">
+                      {(activeSigma * 100).toFixed(1)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.18}
+                    max={1.5}
+                    step={0.005}
+                    aria-label="Bitcoin Volatility"
+                    value={activeSigma}
+                    onChange={(e) => {
+                      setCustomSigma(Number(e.target.value));
+                      setVolMode("custom");
+                      setIsSandboxOverride(true);
+                    }}
+                    className="w-full accent-amber-400"
+                  />
+                  <div className="mt-1 flex justify-between font-mono text-[10px] text-slate-500">
+                    <span>18% Calm</span>
+                    <span>50% Cycle</span>
+                    <span>150% Wild</span>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-slate-800/80 bg-slate-950/60 p-3">
+                  <div className="mb-1 flex items-center justify-between font-mono text-xs">
+                    <span className="text-slate-400">$ASST Stock Price</span>
+                    <span className="font-bold text-white">
+                      {fmtUsd(asstPrice)}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={2}
+                    max={85}
+                    step={0.1}
+                    aria-label="ASST Stock Price"
+                    value={asstPrice}
+                    onChange={(e) => {
+                      setAsstPrice(Number(e.target.value));
+                      setIsSandboxOverride(true);
+                    }}
+                    className="w-full accent-orange-400"
+                  />
+                  <div className="mt-1 flex justify-between font-mono text-[10px] text-slate-500">
+                    <span>$2.00</span>
+                    <span>Fair: {fmtUsd(asstActive.fairValuePerSh)}</span>
+                    <span>$85.00</span>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-slate-800/80 bg-slate-950/60 p-3">
+                  <div className="mb-1 flex items-center justify-between font-mono text-xs">
+                    <span className="text-slate-400">$MSTR Stock Price</span>
+                    <span className="font-bold text-sky-400">
+                      {fmtUsd(mstrPrice)}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={20}
+                    max={450}
+                    step={0.5}
+                    aria-label="MSTR Stock Price"
+                    value={mstrPrice}
+                    onChange={(e) => {
+                      setMstrPrice(Number(e.target.value));
+                      setIsSandboxOverride(true);
+                    }}
+                    className="w-full accent-sky-400"
+                  />
+                  <div className="mt-1 flex justify-between font-mono text-[10px] text-slate-500">
+                    <span>$20</span>
+                    <span>Fair: {fmtUsd(mstrActive.fairValuePerSh)}</span>
+                    <span>$450</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* PRIMARY NAVIGATION TABS */}
+          <nav className="mt-3 flex space-x-1 overflow-x-auto border-t border-slate-800/70 pt-2">
+            {(
+              [
+                {
+                  id: "command",
+                  label: "Overview & Scorecard",
+                  icon: BarChart3,
+                },
+                {
+                  id: "yield",
+                  label: "BTC Growth Hurdle & Charts",
+                  icon: TrendingUp,
+                },
+                {
+                  id: "preferreds",
+                  label: "Preferred Stock Waterfall",
+                  icon: Layers,
+                },
+                {
+                  id: "sheet_audit",
+                  label: "Balance Sheets & Math Checks",
+                  icon: ShieldCheck,
+                  badge: auditReport.allPassed ? "8/8 PASS" : "CHECK",
+                },
+              ] as const
+            ).map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setActiveTab(tab.id)}
+                  className={
+                    "flex shrink-0 items-center gap-2 rounded-lg px-3.5 py-2 text-xs font-semibold transition " +
+                    (isActive
+                      ? "bg-slate-800/95 text-white shadow-sm ring-1 ring-slate-700"
+                      : "text-slate-400 hover:bg-slate-900 hover:text-slate-200")
+                  }
+                >
+                  <Icon
+                    className={
+                      "h-4 w-4 " +
+                      (isActive ? "text-orange-400" : "text-slate-500")
+                    }
+                  />
+                  <span>{tab.label}</span>
+                  {"badge" in tab && tab.badge && (
+                    <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 font-mono text-[10px] text-emerald-400">
+                      {tab.badge}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </nav>
+        </div>
+      </header>
+
+      {/* MAIN CONTENT */}
+      <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
+        {activeTab === "command" && (
+          <OverviewTab
+            mounted={mounted}
+            constantsSource={constantsSource}
+            lastPolledAt={lastPolledAt}
+            asstBs={asstBs}
+            mstrBs={mstrBs}
+            asstActive={asstActive}
+            mstrActive={mstrActive}
+            asstHv={asstHv}
+            asstCycle={asstCycle}
+            mstrHv={mstrHv}
+            mstrCycle={mstrCycle}
+            btcPrice={btcPrice}
+            activeSigma={activeSigma}
+            hvSigma={hvSigma}
+            cycleSigma={cycleSigma}
+            riskFreeRate={riskFreeRate}
+            tCycle={tCycle}
+            auditDrawerOpen={auditDrawerOpen}
+            setAuditDrawerOpen={setAuditDrawerOpen}
+            auditSubTab={auditSubTab}
+            setAuditSubTab={setAuditSubTab}
+            copiedAuditKey={copiedAuditKey}
+            handleCopyAuditItem={handleCopyAuditItem}
+            llmAuditPrompt={llmAuditPrompt}
+            stateTraceMarkdown={stateTraceMarkdown}
+            pythonVerifierCode={pythonVerifierCode}
+            fullAuditBundleText={fullAuditBundleText}
+          />
+        )}
+
+        {activeTab === "yield" && (
+          <YieldChartsTab
+            mounted={mounted}
+            asstActive={asstActive}
+            mstrActive={mstrActive}
+            yieldConeData={yieldConeData}
+            coneTarget={coneTarget}
+            setConeTarget={setConeTarget}
+            historicalSeries={historicalSeries}
+            historyTimeframe={historyTimeframe}
+            setHistoryTimeframe={setHistoryTimeframe}
+            historyMetric={historyMetric}
+            setHistoryMetric={setHistoryMetric}
+            btcSweepData={btcSweepData}
+            sweepMode={sweepMode}
+            setSweepMode={setSweepMode}
+          />
+        )}
+
+        {activeTab === "preferreds" && (
+          <PreferredsTab
+            mounted={mounted}
+            asstBs={asstBs}
+            mstrBs={mstrBs}
+            asstActive={asstActive}
+            mstrActive={mstrActive}
+            preferredQuotes={preferredQuotes}
+            btcSweepData={btcSweepData}
+            prefChartIssuer={prefChartIssuer}
+            setPrefChartIssuer={setPrefChartIssuer}
+          />
+        )}
+
+        {activeTab === "sheet_audit" && (
+          <LedgerAuditTab
+            constantsSource={constantsSource}
+            asstBs={asstBs}
+            mstrBs={mstrBs}
+            showLedgerJson={showLedgerJson}
+            setShowLedgerJson={setShowLedgerJson}
+            publicConstantsJson={publicConstantsJson}
+            copiedAuditKey={copiedAuditKey}
+            handleCopyAuditItem={handleCopyAuditItem}
+            handleReset8KBaselines={handleReset8KBaselines}
+            updateBsField={updateBsField}
+            updateTrancheField={updateTrancheField}
+            auditReport={auditReport}
+            onRerunAudit={handleRerunAudit}
+          />
+        )}
+      </main>
+    </div>
+  );
+}
