@@ -14,6 +14,10 @@ import {
   ChevronUp,
   BarChart3,
   Zap,
+  Target,
+  Beer,
+  Coins,
+  ArrowRight,
 } from "lucide-react";
 import {
   evaluateBalanceSheet,
@@ -37,6 +41,7 @@ import {
   buildPythonVerifierScript,
   buildStateTraceMarkdown,
 } from "@/lib/llm-audit";
+import { computeHurdleMetrics } from "@/lib/hurdle-solver";
 import { TermExplainer } from "@/components/TermExplainer";
 import {
   fmtUsd,
@@ -44,6 +49,7 @@ import {
   calcNetAmplificationPct,
 } from "@/components/dashboard-shared";
 import { OverviewTab } from "@/components/tabs/OverviewTab";
+import { BreakEvenTab } from "@/components/tabs/BreakEvenTab";
 import {
   YieldChartsTab,
   type YieldConePoint,
@@ -95,6 +101,19 @@ interface HistoryApiResponse {
   daily: ApiSnapshotRow[];
 }
 
+function fmtBtcShort(n: number): string {
+  if (!Number.isFinite(n)) return "—";
+  if (Math.abs(n) >= 100) {
+    return Math.round(n).toLocaleString("en-US") + " BTC";
+  }
+  return (
+    n.toLocaleString("en-US", {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+    }) + " BTC"
+  );
+}
+
 async function copyTextSafe(text: string): Promise<boolean> {
   if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
     try {
@@ -123,7 +142,7 @@ async function copyTextSafe(text: string): Promise<boolean> {
 export default function AlphaDashboard() {
   const [mounted, setMounted] = useState(false);
   const [activeTab, setActiveTab] = useState<
-    "command" | "yield" | "preferreds" | "sheet_audit"
+    "command" | "breakeven" | "yield" | "preferreds" | "sheet_audit"
   >("command");
   const [sandboxOpen, setSandboxOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -399,13 +418,44 @@ export default function AlphaDashboard() {
     [mstrBs, btcPrice, cycleSigma, mstrPrice, riskFreeRate, tCycle, solvencyCap]
   );
 
-  // Chart 1: 4-Year Required Debt-Free Sats/Share Growth Path
+  // Clean Unencumbered vs. Total Vault Hurdle Metrics & "Drink a Beer" Targets
+  const asstHurdle = useMemo(
+    () =>
+      computeHurdleMetrics(
+        asstBs,
+        asstActive,
+        activeSigma,
+        riskFreeRate,
+        tCycle,
+        solvencyCap
+      ),
+    [asstBs, asstActive, activeSigma, riskFreeRate, tCycle, solvencyCap]
+  );
+
+  const mstrHurdle = useMemo(
+    () =>
+      computeHurdleMetrics(
+        mstrBs,
+        mstrActive,
+        activeSigma,
+        riskFreeRate,
+        tCycle,
+        solvencyCap
+      ),
+    [mstrBs, mstrActive, activeSigma, riskFreeRate, tCycle, solvencyCap]
+  );
+
+  // Chart 1: 4-Year Required Debt-Free Sats/Share Growth Path (Compounded on TRUE Unencumbered Hurdle)
   const yieldConeData = useMemo<YieldConePoint[]>(() => {
     const steps = [0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0];
     const aSats0 = asstActive.unencumberedSatsPerSh;
     const mSats0 = mstrActive.unencumberedSatsPerSh;
-    const aHurdle = asstActive.annualHurdlePct / 100.0;
-    const mHurdle = mstrActive.annualHurdlePct / 100.0;
+    const aHurdle =
+      (asstHurdle.unencumberedBtcHurdleAnnualPct ??
+        asstActive.annualHurdlePct) / 100.0;
+    const mHurdle =
+      (mstrHurdle.unencumberedBtcHurdleAnnualPct ??
+        mstrActive.annualHurdlePct) / 100.0;
 
     return steps.map((yr) => {
       if (coneTarget === "INDEXED") {
@@ -435,7 +485,7 @@ export default function AlphaDashboard() {
         rawGrossToday: Math.round(rawVaultSats),
       };
     });
-  }, [coneTarget, asstActive, mstrActive]);
+  }, [coneTarget, asstActive, mstrActive, asstHurdle, mstrHurdle]);
 
   // Chart 2: Merged Historical Series (Google Sheet Daily/Intraday + Seed + Live)
   const historicalSeries = useMemo<HistoricalChartPoint[]>(() => {
@@ -490,7 +540,7 @@ export default function AlphaDashboard() {
       >();
       for (const r of rows) {
         const key = (r.timestamp_utc || "").slice(0, sliceLen);
-       if (!key) continue;
+        if (!key) continue;
         const prev = grouped.get(key) || {};
         if (r.ticker.toUpperCase() === "ASST") prev.asst = r;
         if (r.ticker.toUpperCase() === "MSTR") prev.mstr = r;
@@ -879,6 +929,44 @@ export default function AlphaDashboard() {
       ? "vol_cycle"
       : "vol_custom";
 
+  const navTabs: Array<{
+    id: "command" | "breakeven" | "yield" | "preferreds" | "sheet_audit";
+    label: string;
+    icon: React.ComponentType<{ className?: string }>;
+    badge?: string;
+    badgeTone?: "emerald" | "orange";
+  }> = [
+    {
+      id: "command",
+      label: "Overview & Scorecard",
+      icon: BarChart3,
+    },
+    {
+      id: "breakeven",
+      label: "Break-Even Simulator",
+      icon: Target,
+      badge: "4 LEVERS",
+      badgeTone: "orange",
+    },
+    {
+      id: "yield",
+      label: "BTC Growth Hurdle & Charts",
+      icon: TrendingUp,
+    },
+    {
+      id: "preferreds",
+      label: "Preferred Stock Waterfall",
+      icon: Layers,
+    },
+    {
+      id: "sheet_audit",
+      label: "Balance Sheets & Math Checks",
+      icon: ShieldCheck,
+      badge: auditReport.allPassed ? "8/8 PASS" : "CHECK",
+      badgeTone: "emerald",
+    },
+  ];
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 selection:bg-orange-500/30 selection:text-orange-200">
       {toastMessage && (
@@ -1212,31 +1300,7 @@ export default function AlphaDashboard() {
 
           {/* PRIMARY NAVIGATION TABS */}
           <nav className="mt-3 flex space-x-1 overflow-x-auto border-t border-slate-800/70 pt-2">
-            {(
-              [
-                {
-                  id: "command",
-                  label: "Overview & Scorecard",
-                  icon: BarChart3,
-                },
-                {
-                  id: "yield",
-                  label: "BTC Growth Hurdle & Charts",
-                  icon: TrendingUp,
-                },
-                {
-                  id: "preferreds",
-                  label: "Preferred Stock Waterfall",
-                  icon: Layers,
-                },
-                {
-                  id: "sheet_audit",
-                  label: "Balance Sheets & Math Checks",
-                  icon: ShieldCheck,
-                  badge: auditReport.allPassed ? "8/8 PASS" : "CHECK",
-                },
-              ] as const
-            ).map((tab) => {
+            {navTabs.map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
               return (
@@ -1258,8 +1322,15 @@ export default function AlphaDashboard() {
                     }
                   />
                   <span>{tab.label}</span>
-                  {"badge" in tab && tab.badge && (
-                    <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 font-mono text-[10px] text-emerald-400">
+                  {tab.badge && (
+                    <span
+                      className={
+                        "rounded px-1.5 py-0.5 font-mono text-[10px] " +
+                        (tab.badgeTone === "orange"
+                          ? "bg-orange-500/15 text-orange-300"
+                          : "bg-emerald-500/15 text-emerald-400")
+                      }
+                    >
                       {tab.badge}
                     </span>
                   )}
@@ -1273,34 +1344,185 @@ export default function AlphaDashboard() {
       {/* MAIN CONTENT */}
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
         {activeTab === "command" && (
-          <OverviewTab
-            mounted={mounted}
-            constantsSource={constantsSource}
-            lastPolledAt={lastPolledAt}
+          <div className="space-y-6">
+            {/* EXACT DEBT-FREE BTC NEEDED & "DRINK A BEER" BREAK-EVEN STRIP */}
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4 shadow-xl">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Coins className="h-4 w-4 text-orange-400" />
+                  <h2 className="text-xs font-bold uppercase tracking-wider text-slate-200">
+                    What Clears Today&apos;s Premium Completely? (Ending Premium
+                    = $0)
+                  </h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("breakeven")}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-orange-500/40 bg-orange-500/15 px-3 py-1.5 text-xs font-semibold text-orange-300 transition hover:bg-orange-500/25"
+                >
+                  <Target className="h-3.5 w-3.5" />
+                  <span>Open 4-Lever Break-Even Simulator</span>
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                {(
+                  [
+                    {
+                      ticker: "ASST",
+                      accent: "border-orange-500/30",
+                      tagClass: "text-orange-400",
+                      h: asstHurdle,
+                    },
+                    {
+                      ticker: "MSTR",
+                      accent: "border-sky-500/30",
+                      tagClass: "text-sky-400",
+                      h: mstrHurdle,
+                    },
+                  ] as const
+                ).map(({ ticker, accent, tagClass, h }) => (
+                  <div
+                    key={ticker}
+                    className={
+                      "rounded-xl border bg-slate-950/65 p-3.5 font-mono text-xs " +
+                      accent
+                    }
+                  >
+                    <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
+                      <span className={"font-bold " + tagClass}>
+                        ${ticker} Hurdle Reality Check
+                      </span>
+                      <span className="text-[11px] text-slate-400">
+                        {h.alreadyAtDiscount
+                          ? "At/Below Fair Value"
+                          : "Unenc. " +
+                            (h.unencumberedBtcHurdleAnnualPct !== null
+                              ? h.unencumberedBtcHurdleAnnualPct.toFixed(1) +
+                                "%/yr"
+                              : "N/A") +
+                            " • Vault " +
+                            h.totalBtcHurdleAnnualPct.toFixed(1) +
+                            "%/yr"}
+                      </span>
+                    </div>
+
+                    <div className="mt-2.5 grid grid-cols-3 gap-2">
+                      <div>
+                        <TermExplainer
+                          termKey="unencumbered_btc_needed"
+                          className="text-[10px] text-slate-400"
+                        >
+                          Debt-Free BTC
+                        </TermExplainer>
+                        <div className="mt-0.5 text-sm font-bold text-white tabular-nums">
+                          {h.alreadyAtDiscount
+                            ? "0 BTC"
+                            : "+" + fmtBtcShort(h.unencumberedBtcNeeded)}
+                        </div>
+                        <div className="text-[10px] text-slate-500">
+                          {h.alreadyAtDiscount
+                            ? "Cleared"
+                            : "+" +
+                              Math.round(
+                                h.unencumberedSatsNeededPerSh
+                              ).toLocaleString() +
+                              " sats/sh"}
+                        </div>
+                      </div>
+
+                      <div>
+                        <TermExplainer
+                          termKey="drink_a_beer_btc"
+                          className="text-[10px] text-amber-300"
+                        >
+                          Drink a Beer
+                        </TermExplainer>
+                        <div className="mt-0.5 flex items-center gap-1 text-sm font-bold text-amber-300 tabular-nums">
+                          <Beer className="h-3.5 w-3.5 shrink-0" />
+                          <span>
+                            {h.alreadyAtDiscount
+                              ? "Cleared"
+                              : h.drinkABeerUsdBtc !== null
+                              ? fmtUsd(h.drinkABeerUsdBtc, 0)
+                              : "N/A"}
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-slate-500">
+                          $0 Prem. USD Even
+                        </div>
+                      </div>
+
+                      <div>
+                        <TermExplainer
+                          termKey="beat_spot_btc"
+                          className="text-[10px] text-emerald-300"
+                        >
+                          Beat Spot BTC
+                        </TermExplainer>
+                        <div className="mt-0.5 text-sm font-bold text-emerald-400 tabular-nums">
+                          {h.beatSpotBtc !== null
+                            ? h.beatSpotBtc <= btcPrice + 1
+                              ? "Now"
+                              : fmtUsd(h.beatSpotBtc, 0)
+                            : "Needs Issue"}
+                        </div>
+                        <div className="text-[10px] text-slate-500">
+                          Zero-Issuance Wait
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <OverviewTab
+              mounted={mounted}
+              constantsSource={constantsSource}
+              lastPolledAt={lastPolledAt}
+              asstBs={asstBs}
+              mstrBs={mstrBs}
+              asstActive={asstActive}
+              mstrActive={mstrActive}
+              asstHv={asstHv}
+              asstCycle={asstCycle}
+              mstrHv={mstrHv}
+              mstrCycle={mstrCycle}
+              btcPrice={btcPrice}
+              activeSigma={activeSigma}
+              hvSigma={hvSigma}
+              cycleSigma={cycleSigma}
+              riskFreeRate={riskFreeRate}
+              tCycle={tCycle}
+              auditDrawerOpen={auditDrawerOpen}
+              setAuditDrawerOpen={setAuditDrawerOpen}
+              auditSubTab={auditSubTab}
+              setAuditSubTab={setAuditSubTab}
+              copiedAuditKey={copiedAuditKey}
+              handleCopyAuditItem={handleCopyAuditItem}
+              llmAuditPrompt={llmAuditPrompt}
+              stateTraceMarkdown={stateTraceMarkdown}
+              pythonVerifierCode={pythonVerifierCode}
+              fullAuditBundleText={fullAuditBundleText}
+            />
+          </div>
+        )}
+
+        {activeTab === "breakeven" && (
+          <BreakEvenTab
             asstBs={asstBs}
             mstrBs={mstrBs}
             asstActive={asstActive}
             mstrActive={mstrActive}
-            asstHv={asstHv}
-            asstCycle={asstCycle}
-            mstrHv={mstrHv}
-            mstrCycle={mstrCycle}
             btcPrice={btcPrice}
+            asstPrice={asstPrice}
+            mstrPrice={mstrPrice}
             activeSigma={activeSigma}
-            hvSigma={hvSigma}
-            cycleSigma={cycleSigma}
             riskFreeRate={riskFreeRate}
             tCycle={tCycle}
-            auditDrawerOpen={auditDrawerOpen}
-            setAuditDrawerOpen={setAuditDrawerOpen}
-            auditSubTab={auditSubTab}
-            setAuditSubTab={setAuditSubTab}
-            copiedAuditKey={copiedAuditKey}
-            handleCopyAuditItem={handleCopyAuditItem}
-            llmAuditPrompt={llmAuditPrompt}
-            stateTraceMarkdown={stateTraceMarkdown}
-            pythonVerifierCode={pythonVerifierCode}
-            fullAuditBundleText={fullAuditBundleText}
+            solvencyCap={solvencyCap}
           />
         )}
 
