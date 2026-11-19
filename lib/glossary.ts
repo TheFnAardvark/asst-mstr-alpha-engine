@@ -426,6 +426,67 @@ export const GLOSSARY = {
     underTheHood:
       "Direct readout of ValuationResult fields from lib/v31-alpha-engine.ts.",
   },
+  // --- Break-Even Simulator & Exact Hurdle Metrics ---
+  unencumbered_btc_needed: {
+    term: "Unencumbered BTC Needed",
+    mathName: "Exact Debt-Free BTC Required to Clear Premium",
+    plainEnglish:
+      "The exact number of brand-new, debt-free Bitcoin the company would have to add to its vault (at today's flat BTC price) for Model Fair Value to catch up to today's stock price.",
+    whyItMatters:
+      "Turns an abstract percentage hurdle into a concrete stack of coins. If the stock already trades at a discount to Fair Value, this number is 0 BTC.",
+    underTheHood:
+      "Binary-solved directly against evaluateBalanceSheet() so adding this exact BTC count raises Model Fair Value to match liveStockPrice to the penny.",
+  },
+  unencumbered_btc_hurdle: {
+    term: "Unencumbered BTC Hurdle",
+    mathName: "Required Growth on Debt-Free Sats/Share",
+    plainEnglish:
+      "How fast the company's debt-free (unencumbered) sats per share need to grow over 4 years to erase today's stock premium if Bitcoin's price never moves.",
+    whyItMatters:
+      "Higher than the Total Vault hurdle whenever a company carries debt or preferreds, because the growth is measured only against the debt-free slice common shareholders truly own today.",
+    underTheHood:
+      "((1 + Unencumbered Sats Needed ÷ Spot Unencumbered Sats)^(1/T) − 1) × 100%. Displays N/A if CEBE is $0 (underwater).",
+  },
+  total_btc_hurdle: {
+    term: "Total Vault BTC Hurdle",
+    mathName: "Required Growth on Gross BTC Holdings",
+    plainEnglish:
+      "That exact same stack of needed debt-free Bitcoin measured as an annual growth percentage of the company's entire gross Bitcoin vault.",
+    whyItMatters:
+      "Gives you a steady yardstick that still works cleanly even if a severe crash temporarily pushes debt-free sats per share down to zero.",
+    underTheHood:
+      "((1 + Exact Unencumbered BTC Needed ÷ Total BTC Holdings)^(1/T) − 1) × 100%.",
+  },
+  drink_a_beer_btc: {
+    term: "Dollar Break-Even BTC Price",
+    mathName: "Zero-Issuance Fair Value Break-Even Spot Price",
+    plainEnglish:
+      "The exact Bitcoin price where Model Fair Value catches up to the stock price you paid today—even if management does nothing (zero share or preferred issuance) and the market premium collapses to $0.",
+    whyItMatters:
+      "Puts scary-looking premiums in plain perspective. If Bitcoin hits this price tomorrow, you've already cleared the dollar hurdle without waiting years.",
+    underTheHood:
+      "Solves for P_BTC where evaluateBalanceSheet(bs, P_BTC).fairValuePerSh == liveStockPrice.",
+  },
+  beat_spot_btc: {
+    term: "Beat-Spot-BTC Price",
+    mathName: "Zero-Issuance Spot Outperformance Threshold",
+    plainEnglish:
+      "The Bitcoin price where holding the stock actually beats just buying spot Bitcoin today—even if the stock's premium drops all the way to $0.",
+    whyItMatters:
+      "Dollar break-even only gets you back to flat; this shows when leverage and shrinking fixed-dollar debt actually put you ahead of spot BTC. If you paid above 1.0x the gross vault, waiting alone can't beat spot—management has to issue at a premium or use preferreds.",
+    underTheHood:
+      "Solves for lowest P_BTC ≥ spot where Model Fair Value(P_BTC) ≥ liveStockPrice × (P_BTC ÷ spot).",
+  },
+  atm_issuance_premium: {
+    term: "ATM Issuance Premium",
+    mathName: "Common Equity Offering Multiple vs. Fair Value",
+    plainEnglish:
+      "How much above Model Fair Value the company is able to sell new common stock to buy Bitcoin.",
+    whyItMatters:
+      "This is the engine of common-stock BTC yield. Slide this to 0% and no amount of new common shares can ever clear the hurdle—forcing the company to rely on Bitcoin price appreciation or preferred stock instead.",
+    underTheHood:
+      "ATM Sale Price = Model Fair Value × (1 + Premium%). New shares = Proceeds ÷ Sale Price.",
+  },
 } as const satisfies Record<string, GlossaryEntry>;
 
 export type GlossaryKey = keyof typeof GLOSSARY;
